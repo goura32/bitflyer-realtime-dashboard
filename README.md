@@ -77,12 +77,15 @@ pip install -e ".[dev]"
 `config.example.yaml`:
 
 ```yaml
-clickhouse:
-  host: "127.0.0.1"
-  port: 8123
-  database: "clickhouse"
-  username: "clickhouse"
-  password: ""
+# ClickHouse credentials are recommended via environment variables or .env.
+# Uncomment only when you explicitly want file-based configuration.
+#
+# clickhouse:
+#   host: "127.0.0.1"
+#   port: 8123
+#   database: "clickhouse"
+#   username: "clickhouse"
+#   password: ""
 
 dashboard:
   refresh_seconds: 2.0
@@ -101,7 +104,9 @@ dashboard:
   channels: []
 ```
 
-環境変数でも上書きできます。
+ClickHouse の接続先と認証情報は、`config.yaml` に直書きするより `.env` またはシェル環境変数で渡す運用を推奨します。`config.yaml` に置くのは dashboard 設定中心にして、接続情報をファイルで管理したいときだけ `clickhouse:` を uncomment する形が安全です。
+
+環境変数で設定できる項目:
 
 - `CLICKHOUSE_HOST`
 - `CLICKHOUSE_PORT`

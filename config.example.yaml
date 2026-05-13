@@ -1,9 +1,12 @@
-clickhouse:
-  host: "127.0.0.1"
-  port: 8123
-  database: "clickhouse"
-  username: "clickhouse"
-  password: ""
+# ClickHouse credentials are recommended via environment variables or .env.
+# Uncomment only when you explicitly want file-based configuration.
+#
+# clickhouse:
+#   host: "127.0.0.1"
+#   port: 8123
+#   database: "clickhouse"
+#   username: "clickhouse"
+#   password: ""
 
 dashboard:
   refresh_seconds: 2.0
