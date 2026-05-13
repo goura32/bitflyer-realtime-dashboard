@@ -78,6 +78,34 @@ class BoardSnapshotView:
 
 
 @dataclass(slots=True)
+class DedupeStats:
+    total_rows: int
+    unique_hashes: int
+    duplicate_rows: int
+    recent_rows: int
+    recent_unique_hashes: int
+    recent_duplicate_rows: int
+
+
+@dataclass(slots=True)
+class CollectorStatus:
+    collector_instance_id: str
+    total_rows: int
+    rows_1m: int
+    rows_15m: int
+    latest_received_at: str | None
+    age_seconds: int | None
+
+
+@dataclass(slots=True)
+class AlertItem:
+    scope: str
+    severity: str
+    message: str
+    age_seconds: int | None = None
+
+
+@dataclass(slots=True)
 class DashboardData:
     overview: OverviewStats
     by_event_type: list[GroupCount]
@@ -87,3 +115,6 @@ class DashboardData:
     throughput: list[ThroughputRow]
     ticker_points: list[TickerPoint]
     board_snapshots: list[BoardSnapshotView]
+    dedupe: DedupeStats
+    collectors: list[CollectorStatus]
+    alerts: list[AlertItem]

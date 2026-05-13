@@ -12,7 +12,9 @@ from bitflyer_realtime_dashboard.dashboard_app import DashboardApp
 from bitflyer_realtime_dashboard.models import EventFilters
 from bitflyer_realtime_dashboard.rendering import (
     filters_to_text,
+    render_alert_panel,
     render_board_panel,
+    render_collector_panel,
     render_compact_watch,
     render_freshness,
     render_group_counts,
@@ -89,7 +91,9 @@ def snapshot(
             ),
         )
     )
+    console.print(render_alert_panel(data))
     console.print(render_market_panel(data.ticker_points))
+    console.print(render_collector_panel(data, cfg.dashboard.stale_after_seconds))
     console.print(render_group_counts("By Event Type", data.by_event_type))
     console.print(render_group_counts("By Product Code", data.by_product_code))
     console.print(render_freshness(data, cfg.dashboard.stale_after_seconds))
@@ -140,7 +144,19 @@ def watch(
             except KeyboardInterrupt:
                 raise
             console.clear()
-            console.print(render_compact_watch(data, series, cfg.dashboard.stale_after_seconds))
+            console.print(
+                render_compact_watch(
+                    data,
+                    series,
+                    cfg.dashboard.stale_after_seconds,
+                    filters_text=filters_to_text(
+                        filters.product_codes,
+                        filters.event_types,
+                        filters.channels,
+                        filters.since_minutes,
+                    ),
+                )
+            )
             console.print("Press Ctrl+C to stop.")
             time.sleep(cfg.dashboard.refresh_seconds)
 

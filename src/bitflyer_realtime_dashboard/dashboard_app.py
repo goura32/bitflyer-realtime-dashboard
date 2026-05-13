@@ -13,10 +13,13 @@ from bitflyer_realtime_dashboard.config import AppConfig
 from bitflyer_realtime_dashboard.models import DashboardData, EventFilters
 from bitflyer_realtime_dashboard.rendering import (
     filters_to_text,
+    render_alert_panel,
     render_board_panel,
+    render_collector_panel,
     render_freshness,
     render_market_panel,
     render_overview,
+    render_throughput,
 )
 
 
@@ -29,6 +32,9 @@ class DashboardApp(App[None]):
       height: 16;
     }
     #middle {
+      height: 13;
+    }
+    #lower {
       height: 18;
     }
     #bottom {
@@ -71,6 +77,10 @@ class DashboardApp(App[None]):
             yield Static(classes="panel", id="overview")
             yield Static(classes="panel", id="market")
         with Horizontal(id="middle"):
+            yield Static(classes="panel", id="alerts")
+            yield Static(classes="panel", id="collectors")
+            yield Static(classes="panel", id="throughput")
+        with Horizontal(id="lower"):
             yield Static(classes="panel", id="freshness")
             yield Static(classes="panel", id="board")
         with Horizontal(id="bottom"):
@@ -127,6 +137,7 @@ class DashboardApp(App[None]):
     def refresh_data(self) -> None:
         data = self.repository.fetch_dashboard_data(self.filters, self.limit)
         self.latest_data = data
+        series = self.repository.throughput_by_series(data.throughput)
 
         self.query_one("#overview", Static).update(
             render_overview(
@@ -140,6 +151,11 @@ class DashboardApp(App[None]):
             )
         )
         self.query_one("#market", Static).update(render_market_panel(data.ticker_points))
+        self.query_one("#alerts", Static).update(render_alert_panel(data))
+        self.query_one("#collectors", Static).update(
+            render_collector_panel(data, self.config.dashboard.stale_after_seconds)
+        )
+        self.query_one("#throughput", Static).update(render_throughput(data, series))
         self.query_one("#freshness", Static).update(
             render_freshness(data, self.config.dashboard.stale_after_seconds)
         )

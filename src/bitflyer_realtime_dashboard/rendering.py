@@ -36,6 +36,20 @@ def render_overview(data: DashboardData, filters_text: str = "all") -> Panel:
     )
     table.add_row("Latest", str(data.overview.latest_received_at))
     table.add_row(
+        "Dedupe",
+        (
+            f"all {data.dedupe.total_rows}/{data.dedupe.unique_hashes}"
+            f" dup={data.dedupe.duplicate_rows}"
+        ),
+    )
+    table.add_row(
+        "Recent Dedupe",
+        (
+            f"window {data.dedupe.recent_rows}/{data.dedupe.recent_unique_hashes}"
+            f" dup={data.dedupe.recent_duplicate_rows}"
+        ),
+    )
+    table.add_row(
         "Event Types",
         "  ".join(f"{item.key}:{item.count}" for item in data.by_event_type) or "-",
     )
@@ -152,6 +166,46 @@ def render_market_panel(ticker_points: list[TickerPoint]) -> Panel:
     return Panel(table, title="Market", border_style="green")
 
 
+def render_alert_panel(data: DashboardData) -> Panel:
+    table = Table(expand=True)
+    table.add_column("Severity", width=10)
+    table.add_column("Scope")
+    table.add_column("Message")
+    if not data.alerts:
+        table.add_row("[green]ok[/green]", "-", "no active alerts")
+    else:
+        for alert in data.alerts[:8]:
+            style = "red" if alert.severity == "critical" else "yellow"
+            table.add_row(
+                f"[{style}]{alert.severity}[/{style}]",
+                alert.scope,
+                alert.message,
+            )
+    return Panel(table, title="Alerts", border_style="red" if data.alerts else "green")
+
+
+def render_collector_panel(data: DashboardData, stale_after_seconds: int) -> Panel:
+    table = Table(expand=True)
+    table.add_column("Collector")
+    table.add_column("Age", justify="right")
+    table.add_column("1m", justify="right")
+    table.add_column("15m", justify="right")
+    table.add_column("Total", justify="right")
+    if not data.collectors:
+        table.add_row("-", "-", "-", "-", "-")
+    else:
+        for row in data.collectors:
+            style = age_style(row.age_seconds, stale_after_seconds * 2)
+            table.add_row(
+                row.collector_instance_id,
+                Text(str(row.age_seconds), style=style),
+                str(row.rows_1m),
+                str(row.rows_15m),
+                str(row.total_rows),
+            )
+    return Panel(table, title="Collectors", border_style="blue")
+
+
 def render_board_panel(board_snapshots: list[BoardSnapshotView]) -> Panel:
     if not board_snapshots:
         return Panel("No board snapshots", title="Board", border_style="yellow")
@@ -203,10 +257,13 @@ def render_compact_watch(
     data: DashboardData,
     series: dict[str, list[int]],
     stale_after_seconds: int,
+    filters_text: str = "all",
 ) -> Group:
     return Group(
-        render_overview(data),
+        render_overview(data, filters_text=filters_text),
+        render_alert_panel(data),
         render_market_panel(data.ticker_points),
+        render_collector_panel(data, stale_after_seconds),
         render_freshness(data, stale_after_seconds),
         render_throughput(data, series),
         render_board_panel(data.board_snapshots),

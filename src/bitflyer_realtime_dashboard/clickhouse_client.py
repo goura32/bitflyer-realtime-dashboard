@@ -8,9 +8,12 @@ import clickhouse_connect
 
 from bitflyer_realtime_dashboard.config import AppConfig
 from bitflyer_realtime_dashboard.models import (
+    AlertItem,
     BoardLevel,
     BoardSnapshotView,
+    CollectorStatus,
     DashboardData,
+    DedupeStats,
     EventFilters,
     FreshnessRow,
     GroupCount,
@@ -66,6 +69,60 @@ def parse_board_snapshot(
     )
 
 
+def stale_threshold_for_event_type(base_seconds: int, event_type: str) -> int:
+    multipliers = {
+        "ticker": 1,
+        "executions": 2,
+        "board_delta": 2,
+        "board_snapshot": 10,
+    }
+    return base_seconds * multipliers.get(event_type, 1)
+
+
+def build_alerts(
+    freshness: list[FreshnessRow],
+    collectors: list[CollectorStatus],
+    base_stale_after_seconds: int,
+) -> list[AlertItem]:
+    alerts: list[AlertItem] = []
+    for row in freshness:
+        threshold = stale_threshold_for_event_type(base_stale_after_seconds, row.event_type)
+        if row.age_seconds is not None and row.age_seconds >= threshold:
+            severity = "critical" if row.age_seconds >= threshold * 2 else "warning"
+            alerts.append(
+                AlertItem(
+                    scope=f"{row.event_type}:{row.product_code}",
+                    severity=severity,
+                    message=f"stale for {row.age_seconds}s (threshold {threshold}s)",
+                    age_seconds=row.age_seconds,
+                )
+            )
+    for collector in collectors:
+        collector_threshold = base_stale_after_seconds * 2
+        if collector.age_seconds is not None and collector.age_seconds >= collector_threshold:
+            severity = (
+                "critical"
+                if collector.age_seconds >= base_stale_after_seconds * 4
+                else "warning"
+            )
+            alerts.append(
+                AlertItem(
+                    scope=collector.collector_instance_id,
+                    severity=severity,
+                    message=f"collector silent for {collector.age_seconds}s",
+                    age_seconds=collector.age_seconds,
+                )
+            )
+    return sorted(
+        alerts,
+        key=lambda item: (
+            0 if item.severity == "critical" else 1,
+            -(item.age_seconds or 0),
+            item.scope,
+        ),
+    )
+
+
 class DashboardRepository:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -115,6 +172,9 @@ class DashboardRepository:
         throughput = self.fetch_throughput(filters)
         ticker_points = self.fetch_ticker_points(filters)
         board_snapshots = self.fetch_latest_board_snapshots(filters)
+        dedupe = self.fetch_dedupe_stats(filters)
+        collectors = self.fetch_collector_status(filters)
+        alerts = build_alerts(freshness, collectors, self.config.dashboard.stale_after_seconds)
         return DashboardData(
             overview=overview,
             by_event_type=by_event_type,
@@ -124,6 +184,9 @@ class DashboardRepository:
             throughput=throughput,
             ticker_points=ticker_points,
             board_snapshots=board_snapshots,
+            dedupe=dedupe,
+            collectors=collectors,
+            alerts=alerts,
         )
 
     def fetch_overview(self, filters: EventFilters) -> OverviewStats:
@@ -258,6 +321,60 @@ class DashboardRepository:
             key = f"{row.event_type}:{row.product_code}"
             series[key][indexed[row.minute_bucket]] = row.count
         return dict(series)
+
+    def fetch_dedupe_stats(self, filters: EventFilters) -> DedupeStats:
+        where, params = build_where_clause(filters)
+        recent_minutes = filters.since_minutes or 15
+        query = f"""
+        SELECT
+            count() AS total_rows,
+            uniqExact(payload_hash) AS unique_hashes,
+            count() - uniqExact(payload_hash) AS duplicate_rows,
+            countIf(received_at >= now() - toIntervalMinute(%(recent_minutes)s)) AS recent_rows,
+            uniqExactIf(payload_hash, received_at >= now() - toIntervalMinute(%(recent_minutes)s))
+                AS recent_unique_hashes
+        FROM raw_events
+        {where}
+        """
+        params = {**params, "recent_minutes": recent_minutes}
+        row = self.client.query(query, parameters=params).result_rows[0]
+        recent_duplicates = row[3] - row[4]
+        return DedupeStats(
+            total_rows=row[0],
+            unique_hashes=row[1],
+            duplicate_rows=row[2],
+            recent_rows=row[3],
+            recent_unique_hashes=row[4],
+            recent_duplicate_rows=recent_duplicates,
+        )
+
+    def fetch_collector_status(self, filters: EventFilters) -> list[CollectorStatus]:
+        where, params = build_where_clause(filters)
+        query = f"""
+        SELECT
+            collector_instance_id,
+            count() AS total_rows,
+            countIf(received_at >= now() - INTERVAL 1 MINUTE) AS rows_1m,
+            countIf(received_at >= now() - INTERVAL 15 MINUTE) AS rows_15m,
+            max(received_at) AS latest_received_at,
+            dateDiff('second', max(received_at), now()) AS age_seconds
+        FROM raw_events
+        {where}
+        GROUP BY collector_instance_id
+        ORDER BY age_seconds ASC, collector_instance_id ASC
+        """
+        rows = self.client.query(query, parameters=params).result_rows
+        return [
+            CollectorStatus(
+                collector_instance_id=row[0],
+                total_rows=row[1],
+                rows_1m=row[2],
+                rows_15m=row[3],
+                latest_received_at=row[4].isoformat() if row[4] else None,
+                age_seconds=row[5],
+            )
+            for row in rows
+        ]
 
     def fetch_ticker_points(
         self,
