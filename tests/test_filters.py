@@ -14,10 +14,12 @@ def test_build_where_clause_with_filters() -> None:
             product_codes=["BTC_JPY"],
             event_types=["ticker"],
             channels=["lightning_ticker_BTC_JPY"],
+            since_minutes=15,
         )
     )
     assert "product_code IN %(product_codes)s" in where
     assert "event_type IN %(event_types)s" in where
     assert "channel IN %(channels)s" in where
+    assert "toIntervalMinute(%(since_minutes)s)" in where
     assert params["product_codes"] == ["BTC_JPY"]
-
+    assert params["since_minutes"] == 15

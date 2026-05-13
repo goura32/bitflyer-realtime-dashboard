@@ -8,6 +8,7 @@ class EventFilters:
     product_codes: list[str] = field(default_factory=list)
     event_types: list[str] = field(default_factory=list)
     channels: list[str] = field(default_factory=list)
+    since_minutes: int | None = None
 
 
 @dataclass(slots=True)
@@ -53,6 +54,30 @@ class ThroughputRow:
 
 
 @dataclass(slots=True)
+class TickerPoint:
+    product_code: str
+    received_at: str
+    ltp: float
+    best_bid: float | None
+    best_ask: float | None
+
+
+@dataclass(slots=True)
+class BoardLevel:
+    price: float
+    size: float
+
+
+@dataclass(slots=True)
+class BoardSnapshotView:
+    product_code: str
+    received_at: str
+    mid_price: float | None
+    bids: list[BoardLevel]
+    asks: list[BoardLevel]
+
+
+@dataclass(slots=True)
 class DashboardData:
     overview: OverviewStats
     by_event_type: list[GroupCount]
@@ -60,4 +85,5 @@ class DashboardData:
     freshness: list[FreshnessRow]
     latest_events: list[LatestEvent]
     throughput: list[ThroughputRow]
-
+    ticker_points: list[TickerPoint]
+    board_snapshots: list[BoardSnapshotView]

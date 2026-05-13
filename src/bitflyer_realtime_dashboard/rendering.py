@@ -1,25 +1,49 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 
+from rich.columns import Columns
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from bitflyer_realtime_dashboard.formatting import age_style, sparkline, style_event_type
-from bitflyer_realtime_dashboard.models import DashboardData, LatestEvent
+from bitflyer_realtime_dashboard.formatting import (
+    age_style,
+    format_price,
+    format_size,
+    sparkline,
+    style_event_type,
+)
+from bitflyer_realtime_dashboard.models import (
+    BoardSnapshotView,
+    DashboardData,
+    LatestEvent,
+    TickerPoint,
+)
 
 
-def render_overview(data: DashboardData) -> Table:
-    table = Table(title="Overview")
-    table.add_column("Metric")
-    table.add_column("Value")
-    table.add_row("total rows", str(data.overview.total_rows))
-    table.add_row("rows 1m", str(data.overview.rows_1m))
-    table.add_row("rows 5m", str(data.overview.rows_5m))
-    table.add_row("rows 15m", str(data.overview.rows_15m))
-    table.add_row("latest received_at", str(data.overview.latest_received_at))
-    return table
+def render_overview(data: DashboardData, filters_text: str = "all") -> Panel:
+    table = Table.grid(expand=True)
+    table.add_column(style="bold")
+    table.add_column()
+    table.add_row("Scope", filters_text)
+    table.add_row("Total", str(data.overview.total_rows))
+    table.add_row(
+        "1m / 5m / 15m",
+        f"{data.overview.rows_1m} / {data.overview.rows_5m} / {data.overview.rows_15m}",
+    )
+    table.add_row("Latest", str(data.overview.latest_received_at))
+    table.add_row(
+        "Event Types",
+        "  ".join(f"{item.key}:{item.count}" for item in data.by_event_type) or "-",
+    )
+    table.add_row(
+        "Products",
+        "  ".join(f"{item.key}:{item.count}" for item in data.by_product_code) or "-",
+    )
+    return Panel(table, title="Overview", border_style="cyan")
 
 
 def render_group_counts(title: str, counts: list) -> Table:
@@ -38,19 +62,26 @@ def render_group_counts(title: str, counts: list) -> Table:
 
 
 def render_freshness(data: DashboardData, stale_after_seconds: int) -> Table:
-    table = Table(title="Freshness")
-    table.add_column("event_type")
-    table.add_column("product_code")
-    table.add_column("latest_received_at")
-    table.add_column("age_seconds", justify="right")
-    for row in data.freshness:
-        style = age_style(row.age_seconds, stale_after_seconds)
-        table.add_row(
-            row.event_type,
-            row.product_code,
-            str(row.latest_received_at),
-            Text(str(row.age_seconds), style=style),
-        )
+    event_types = sorted({row.event_type for row in data.freshness})
+    product_codes = sorted({row.product_code for row in data.freshness})
+    matrix = {(row.event_type, row.product_code): row for row in data.freshness}
+
+    table = Table(title="Freshness Matrix", expand=True)
+    table.add_column("event_type", style="bold")
+    for product_code in product_codes:
+        table.add_column(product_code, justify="center")
+
+    for event_type in event_types:
+        cells: list[Text] = []
+        for product_code in product_codes:
+            row = matrix.get((event_type, product_code))
+            if row is None:
+                cells.append(Text("-", style="dim"))
+                continue
+            style = age_style(row.age_seconds, stale_after_seconds)
+            cell = Text(f"{row.age_seconds}s", style=style)
+            cells.append(cell)
+        table.add_row(event_type, *cells)
     return table
 
 
@@ -74,16 +105,110 @@ def render_latest_events(events: list[LatestEvent]) -> Table:
 
 def render_json_detail(event: LatestEvent | None) -> Panel:
     if event is None:
-        return Panel("No event selected", title="JSON Detail")
+        return Panel("No event selected", title="JSON Detail", border_style="bright_black")
     pretty = json.dumps(json.loads(event.payload_json), indent=2, ensure_ascii=False)
-    return Panel(pretty, title=f"JSON Detail: {event.channel}")
+    return Panel(pretty, title=f"JSON Detail: {event.channel}", border_style="bright_black")
 
 
 def render_throughput(data: DashboardData, series: dict[str, list[int]]) -> Table:
-    table = Table(title="Throughput 15m")
+    table = Table(title="Throughput")
     table.add_column("Series")
     table.add_column("Sparkline")
-    table.add_column("Last Count", justify="right")
+    table.add_column("Last", justify="right")
     for key, values in sorted(series.items()):
         table.add_row(key, sparkline(values), str(values[-1] if values else 0))
     return table
+
+
+def render_market_panel(ticker_points: list[TickerPoint]) -> Panel:
+    grouped: dict[str, list[TickerPoint]] = defaultdict(list)
+    for point in ticker_points:
+        grouped[point.product_code].append(point)
+
+    if not grouped:
+        return Panel("No ticker data", title="Market", border_style="green")
+
+    table = Table(expand=True)
+    table.add_column("Product")
+    table.add_column("Last", justify="right")
+    table.add_column("Bid")
+    table.add_column("Ask")
+    table.add_column("Spread", justify="right")
+    table.add_column("Chart")
+
+    for product_code, points in sorted(grouped.items()):
+        latest = points[-1]
+        spread = None
+        if latest.best_bid is not None and latest.best_ask is not None:
+            spread = latest.best_ask - latest.best_bid
+        table.add_row(
+            product_code,
+            format_price(latest.ltp),
+            format_price(latest.best_bid),
+            format_price(latest.best_ask),
+            format_price(spread),
+            sparkline([point.ltp for point in points]),
+        )
+    return Panel(table, title="Market", border_style="green")
+
+
+def render_board_panel(board_snapshots: list[BoardSnapshotView]) -> Panel:
+    if not board_snapshots:
+        return Panel("No board snapshots", title="Board", border_style="yellow")
+
+    panels = []
+    for board in board_snapshots:
+        board_table = Table.grid(expand=True)
+        board_table.add_column(justify="right", style="red")
+        board_table.add_column(justify="right")
+        board_table.add_column(justify="right", style="green")
+        board_table.add_row("Ask Px", "Ask Sz", "")
+        for ask in reversed(board.asks[:5]):
+            board_table.add_row(format_price(ask.price), format_size(ask.size), "")
+        board_table.add_row(
+            Text("MID", style="bold yellow"),
+            Text(format_price(board.mid_price), style="bold yellow"),
+            Text(board.received_at.split(" ")[-1], style="dim"),
+        )
+        board_table.add_row("", "Bid Sz", "Bid Px")
+        for bid in board.bids[:5]:
+            board_table.add_row("", format_size(bid.size), format_price(bid.price))
+        panels.append(Panel(board_table, title=board.product_code, border_style="yellow"))
+    return Panel(
+        Columns(panels, equal=True, expand=True),
+        title="Board Snapshots",
+        border_style="yellow",
+    )
+
+
+def filters_to_text(
+    product_codes: list[str],
+    event_types: list[str],
+    channels: list[str],
+    since_minutes: int | None,
+) -> str:
+    parts = []
+    if product_codes:
+        parts.append("products=" + ",".join(product_codes))
+    if event_types:
+        parts.append("types=" + ",".join(event_types))
+    if channels:
+        parts.append("channels=" + ",".join(channels))
+    if since_minutes is not None:
+        parts.append(f"since={since_minutes}m")
+    return " | ".join(parts) if parts else "all"
+
+
+def render_compact_watch(
+    data: DashboardData,
+    series: dict[str, list[int]],
+    stale_after_seconds: int,
+) -> Group:
+    return Group(
+        render_overview(data),
+        render_market_panel(data.ticker_points),
+        render_freshness(data, stale_after_seconds),
+        render_throughput(data, series),
+        render_board_panel(data.board_snapshots),
+        render_latest_events(data.latest_events),
+    )

@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import json
+
 from textual import on
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import DataTable, Footer, Header, Pretty, Static
 
 from bitflyer_realtime_dashboard.clickhouse_client import DashboardRepository
 from bitflyer_realtime_dashboard.config import AppConfig
 from bitflyer_realtime_dashboard.models import DashboardData, EventFilters
+from bitflyer_realtime_dashboard.rendering import (
+    filters_to_text,
+    render_board_panel,
+    render_freshness,
+    render_market_panel,
+    render_overview,
+)
 
 
 class DashboardApp(App[None]):
@@ -17,23 +26,33 @@ class DashboardApp(App[None]):
       layout: vertical;
     }
     #top {
-      height: 14;
+      height: 16;
+    }
+    #middle {
+      height: 18;
     }
     #bottom {
       height: 1fr;
     }
     .panel {
       border: round $accent;
-      padding: 1;
+      padding: 0 1;
     }
-    DataTable {
+    #latest {
       height: 1fr;
+    }
+    #json_detail {
+      min-width: 40;
     }
     """
 
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
+        ("1", "lookback_1m", "1m"),
+        ("5", "lookback_5m", "5m"),
+        ("f", "lookback_15m", "15m"),
+        ("0", "lookback_all", "All"),
     ]
 
     selected_event_index = reactive(0)
@@ -50,13 +69,14 @@ class DashboardApp(App[None]):
         yield Header(show_clock=True)
         with Horizontal(id="top"):
             yield Static(classes="panel", id="overview")
-            yield Static(classes="panel", id="throughput")
+            yield Static(classes="panel", id="market")
+        with Horizontal(id="middle"):
+            yield Static(classes="panel", id="freshness")
+            yield Static(classes="panel", id="board")
         with Horizontal(id="bottom"):
-            with Vertical():
-                yield Static(classes="panel", id="freshness")
-                latest = DataTable(id="latest")
-                latest.zebra_stripes = True
-                yield latest
+            latest = DataTable(id="latest")
+            latest.zebra_stripes = True
+            yield latest
             yield Pretty({}, id="json_detail")
         yield Footer()
 
@@ -70,66 +90,62 @@ class DashboardApp(App[None]):
             "collector",
         )
         self.set_interval(self.config.dashboard.refresh_seconds, self.refresh_data)
+        self._update_subtitle()
         self.call_after_refresh(self.refresh_data)
 
+    def _update_subtitle(self) -> None:
+        self.sub_title = filters_to_text(
+            self.filters.product_codes,
+            self.filters.event_types,
+            self.filters.channels,
+            self.filters.since_minutes,
+        )
+
     def action_refresh(self) -> None:
+        self.refresh_data()
+
+    def action_lookback_1m(self) -> None:
+        self.filters.since_minutes = 1
+        self._update_subtitle()
+        self.refresh_data()
+
+    def action_lookback_5m(self) -> None:
+        self.filters.since_minutes = 5
+        self._update_subtitle()
+        self.refresh_data()
+
+    def action_lookback_15m(self) -> None:
+        self.filters.since_minutes = 15
+        self._update_subtitle()
+        self.refresh_data()
+
+    def action_lookback_all(self) -> None:
+        self.filters.since_minutes = None
+        self._update_subtitle()
         self.refresh_data()
 
     def refresh_data(self) -> None:
         data = self.repository.fetch_dashboard_data(self.filters, self.limit)
         self.latest_data = data
 
-        overview = self.query_one("#overview", Static)
-        overview.update(
-            "\n".join(
-                [
-                    f"total rows: {data.overview.total_rows}",
-                    f"rows 1m: {data.overview.rows_1m}",
-                    f"rows 5m: {data.overview.rows_5m}",
-                    f"rows 15m: {data.overview.rows_15m}",
-                    f"latest: {data.overview.latest_received_at}",
-                    "",
-                    "event types:",
-                    *[f"  {item.key}: {item.count}" for item in data.by_event_type],
-                    "",
-                    "product codes:",
-                    *[f"  {item.key}: {item.count}" for item in data.by_product_code],
-                ]
+        self.query_one("#overview", Static).update(
+            render_overview(
+                data,
+                filters_text=filters_to_text(
+                    self.filters.product_codes,
+                    self.filters.event_types,
+                    self.filters.channels,
+                    self.filters.since_minutes,
+                ),
             )
         )
-
-        freshness = self.query_one("#freshness", Static)
-        freshness.update(
-            "\n".join(
-                [
-                    "Freshness",
-                    *[
-                        (
-                            f"{row.event_type:<14} {row.product_code:<12} "
-                            f"{row.age_seconds:>4}s {row.latest_received_at}"
-                        )
-                        for row in data.freshness
-                    ],
-                ]
-            )
+        self.query_one("#market", Static).update(render_market_panel(data.ticker_points))
+        self.query_one("#freshness", Static).update(
+            render_freshness(data, self.config.dashboard.stale_after_seconds)
         )
-
-        throughput = self.query_one("#throughput", Static)
-        series = self.repository.throughput_by_series(data.throughput)
-        throughput.update(
-            "\n".join(
-                [
-                    "Throughput 15m",
-                    *[
-                        f"{key:<32} {' '.join(str(v) for v in values[-5:])}"
-                        for key, values in sorted(series.items())
-                    ],
-                ]
-            )
-        )
-
+        self.query_one("#board", Static).update(render_board_panel(data.board_snapshots))
+        self.query_one("#latest", DataTable).clear()
         latest = self.query_one("#latest", DataTable)
-        latest.clear()
         for event in data.latest_events:
             latest.add_row(
                 event.received_at,
@@ -138,6 +154,11 @@ class DashboardApp(App[None]):
                 event.channel,
                 event.collector_instance_id,
             )
+        latest.cursor_type = "row"
+        latest.show_cursor = True
+        latest.border_title = "Latest Events"
+        latest.border_subtitle = "Enter highlight moves JSON detail"
+        self.query_one("#json_detail", Pretty).border_title = "JSON Detail"
         self.update_json_detail()
 
     @on(DataTable.RowHighlighted)
@@ -160,7 +181,7 @@ class DashboardApp(App[None]):
                 "channel": event.channel,
                 "collector_instance_id": event.collector_instance_id,
                 "payload_hash": event.payload_hash,
-                "payload_json": event.payload_json,
+                "payload_json": json.loads(event.payload_json),
             }
         )
 
