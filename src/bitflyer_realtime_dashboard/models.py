@@ -10,13 +10,16 @@ class EventFilters:
     channels: list[str] = field(default_factory=list)
     since_minutes: int | None = None
 
-
 @dataclass(slots=True)
 class OverviewStats:
     total_rows: int
     rows_1m: int
     rows_5m: int
     rows_15m: int
+    unique_total_rows: int
+    unique_rows_1m: int
+    unique_rows_5m: int
+    unique_rows_15m: int
     latest_received_at: str | None
 
 
@@ -51,6 +54,7 @@ class ThroughputRow:
     event_type: str
     product_code: str
     count: int
+    unique_count: int
 
 
 @dataclass(slots=True)
@@ -70,6 +74,15 @@ class BoardLevel:
 
 @dataclass(slots=True)
 class BoardSnapshotView:
+    product_code: str
+    received_at: str
+    mid_price: float | None
+    bids: list[BoardLevel]
+    asks: list[BoardLevel]
+
+
+@dataclass(slots=True)
+class BoardDeltaView:
     product_code: str
     received_at: str
     mid_price: float | None
@@ -99,7 +112,7 @@ class ExecutionSummary:
 @dataclass(slots=True)
 class CollectorBiasRow:
     collector_instance_id: str
-    product_code: str
+    group_key: str
     event_count: int
     share_ratio: float
 
@@ -142,8 +155,10 @@ class DashboardData:
     throughput: list[ThroughputRow]
     ticker_points: list[TickerPoint]
     board_snapshots: list[BoardSnapshotView]
+    board_deltas: list[BoardDeltaView]
     executions: list[ExecutionSummary]
     dedupe: DedupeStats
     collectors: list[CollectorStatus]
-    collector_bias: list[CollectorBiasRow]
+    collector_product_bias: list[CollectorBiasRow]
+    collector_event_type_bias: list[CollectorBiasRow]
     alerts: list[AlertItem]

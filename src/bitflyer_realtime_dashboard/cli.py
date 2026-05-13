@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Literal
 
 import typer
 from rich.console import Console
@@ -13,8 +14,10 @@ from bitflyer_realtime_dashboard.models import EventFilters
 from bitflyer_realtime_dashboard.rendering import (
     filters_to_text,
     render_alert_panel,
+    render_board_delta_panel,
     render_board_panel,
     render_collector_bias_panel,
+    render_collector_event_type_bias_panel,
     render_collector_panel,
     render_compact_watch,
     render_executions_panel,
@@ -76,15 +79,25 @@ def snapshot(
     event_type: list[str] = typer.Option(None, "--event-type"),
     channel: list[str] = typer.Option(None, "--channel"),
     since_minutes: int | None = typer.Option(None, "--since-minutes"),
+    dedupe_view: Literal["raw", "unique", "both"] | None = typer.Option(
+        None,
+        "--dedupe-view",
+    ),
 ) -> None:
     cfg = _load_config(config, env_file)
+    if dedupe_view is not None:
+        cfg.dashboard.dedupe_view = dedupe_view
     filters = _filters(cfg, product_code, event_type, channel, since_minutes)
     with DashboardRepository(cfg) as repo:
         data = repo.fetch_dashboard_data(filters, limit or cfg.dashboard.default_limit)
-        series = repo.throughput_by_series(data.throughput)
+        series = repo.throughput_by_series(
+            data.throughput,
+            dedupe_view=cfg.dashboard.dedupe_view,
+        )
     console.print(
         render_overview(
             data,
+            dedupe_view=cfg.dashboard.dedupe_view,
             filters_text=filters_to_text(
                 filters.product_codes,
                 filters.event_types,
@@ -97,11 +110,13 @@ def snapshot(
     console.print(render_market_panel(data.ticker_points))
     console.print(render_collector_panel(data, cfg.dashboard.collector_stale_seconds))
     console.print(render_collector_bias_panel(data))
+    console.print(render_collector_event_type_bias_panel(data))
     console.print(render_executions_panel(data.executions))
     console.print(render_group_counts("By Event Type", data.by_event_type))
     console.print(render_group_counts("By Product Code", data.by_product_code))
     console.print(render_freshness(data, cfg.dashboard))
-    console.print(render_throughput(data, series))
+    console.print(render_throughput(data, series, dedupe_view=cfg.dashboard.dedupe_view))
+    console.print(render_board_delta_panel(data.board_deltas))
     console.print(render_board_panel(data.board_snapshots))
     console.print(render_latest_events(data.latest_events))
     if data.latest_events:
@@ -135,16 +150,25 @@ def watch(
     event_type: list[str] = typer.Option(None, "--event-type"),
     channel: list[str] = typer.Option(None, "--channel"),
     since_minutes: int | None = typer.Option(None, "--since-minutes"),
+    dedupe_view: Literal["raw", "unique", "both"] | None = typer.Option(
+        None,
+        "--dedupe-view",
+    ),
 ) -> None:
     cfg = _load_config(config, env_file)
     if refresh_seconds is not None:
         cfg.dashboard.refresh_seconds = refresh_seconds
+    if dedupe_view is not None:
+        cfg.dashboard.dedupe_view = dedupe_view
     filters = _filters(cfg, product_code, event_type, channel, since_minutes)
     with DashboardRepository(cfg) as repo, console.screen():
         while True:
             try:
                 data = repo.fetch_dashboard_data(filters, limit or cfg.dashboard.default_limit)
-                series = repo.throughput_by_series(data.throughput)
+                series = repo.throughput_by_series(
+                    data.throughput,
+                    dedupe_view=cfg.dashboard.dedupe_view,
+                )
             except KeyboardInterrupt:
                 raise
             console.clear()
@@ -153,6 +177,7 @@ def watch(
                     data,
                     series,
                     cfg.dashboard,
+                    dedupe_view=cfg.dashboard.dedupe_view,
                     filters_text=filters_to_text(
                         filters.product_codes,
                         filters.event_types,
@@ -175,9 +200,15 @@ def tui(
     event_type: list[str] = typer.Option(None, "--event-type"),
     channel: list[str] = typer.Option(None, "--channel"),
     since_minutes: int | None = typer.Option(None, "--since-minutes"),
+    dedupe_view: Literal["raw", "unique", "both"] | None = typer.Option(
+        None,
+        "--dedupe-view",
+    ),
 ) -> None:
     cfg = _load_config(config, env_file)
     if refresh_seconds is not None:
         cfg.dashboard.refresh_seconds = refresh_seconds
+    if dedupe_view is not None:
+        cfg.dashboard.dedupe_view = dedupe_view
     filters = _filters(cfg, product_code, event_type, channel, since_minutes)
     DashboardApp(cfg, filters, limit or cfg.dashboard.default_limit).run()

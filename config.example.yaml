@@ -16,6 +16,7 @@ dashboard:
   default_limit: 20
   chart_points: 30
   board_depth: 5
+  dedupe_view: "both"
   product_codes: []
   event_types: []
   channels: []

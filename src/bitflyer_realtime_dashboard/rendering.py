@@ -18,7 +18,9 @@ from bitflyer_realtime_dashboard.formatting import (
     style_event_type,
 )
 from bitflyer_realtime_dashboard.models import (
+    BoardDeltaView,
     BoardSnapshotView,
+    CollectorBiasRow,
     DashboardData,
     ExecutionSummary,
     LatestEvent,
@@ -36,15 +38,44 @@ def _stale_threshold(config: DashboardConfig, event_type: str) -> int:
     return thresholds.get(event_type, config.stale_after_seconds)
 
 
-def render_overview(data: DashboardData, filters_text: str = "all") -> Panel:
+def render_overview(
+    data: DashboardData,
+    dedupe_view: str = "both",
+    filters_text: str = "all",
+) -> Panel:
+    if dedupe_view == "unique":
+        total = data.overview.unique_total_rows
+        rows_window = (
+            data.overview.unique_rows_1m,
+            data.overview.unique_rows_5m,
+            data.overview.unique_rows_15m,
+        )
+        mode_text = "unique payload_hash"
+    elif dedupe_view == "raw":
+        total = data.overview.total_rows
+        rows_window = (
+            data.overview.rows_1m,
+            data.overview.rows_5m,
+            data.overview.rows_15m,
+        )
+        mode_text = "raw rows"
+    else:
+        total = data.overview.total_rows
+        rows_window = (
+            data.overview.rows_1m,
+            data.overview.rows_5m,
+            data.overview.rows_15m,
+        )
+        mode_text = "both"
     table = Table.grid(expand=True)
     table.add_column(style="bold")
     table.add_column()
     table.add_row("Scope", filters_text)
-    table.add_row("Total", str(data.overview.total_rows))
+    table.add_row("Mode", mode_text)
+    table.add_row("Total", str(total))
     table.add_row(
         "1m / 5m / 15m",
-        f"{data.overview.rows_1m} / {data.overview.rows_5m} / {data.overview.rows_15m}",
+        f"{rows_window[0]} / {rows_window[1]} / {rows_window[2]}",
     )
     table.add_row("Latest", str(data.overview.latest_received_at))
     table.add_row(
@@ -136,8 +167,17 @@ def render_json_detail(event: LatestEvent | None) -> Panel:
     return Panel(pretty, title=f"JSON Detail: {event.channel}", border_style="bright_black")
 
 
-def render_throughput(data: DashboardData, series: dict[str, list[int]]) -> Table:
-    table = Table(title="Throughput")
+def render_throughput(
+    data: DashboardData,
+    series: dict[str, list[int]],
+    dedupe_view: str = "both",
+) -> Table:
+    title = "Throughput"
+    if dedupe_view == "unique":
+        title = "Throughput (Unique)"
+    elif dedupe_view == "raw":
+        title = "Throughput (Raw)"
+    table = Table(title=title)
     table.add_column("Series")
     table.add_column("Sparkline")
     table.add_column("Last", justify="right")
@@ -218,24 +258,33 @@ def render_collector_panel(data: DashboardData, collector_stale_seconds: int) ->
     return Panel(table, title="Collectors", border_style="blue")
 
 
-def render_collector_bias_panel(data: DashboardData) -> Panel:
+def _render_bias_table(rows: list[CollectorBiasRow]) -> Table:
     table = Table(expand=True)
     table.add_column("Collector")
-    table.add_column("Product")
+    table.add_column("Key")
     table.add_column("Count", justify="right")
     table.add_column("Share", justify="right")
-    rows = data.collector_bias[:12]
     if not rows:
         table.add_row("-", "-", "-", "-")
     else:
         for row in rows:
             table.add_row(
                 row.collector_instance_id,
-                row.product_code,
+                row.group_key,
                 str(row.event_count),
                 f"{row.share_ratio * 100:.1f}%",
             )
+    return table
+
+
+def render_collector_bias_panel(data: DashboardData) -> Panel:
+    table = _render_bias_table(data.collector_product_bias[:12])
     return Panel(table, title="Collector Bias", border_style="blue")
+
+
+def render_collector_event_type_bias_panel(data: DashboardData) -> Panel:
+    table = _render_bias_table(data.collector_event_type_bias[:12])
+    return Panel(table, title="Collector Event Bias", border_style="blue")
 
 
 def render_executions_panel(executions: list[ExecutionSummary]) -> Panel:
@@ -289,6 +338,35 @@ def render_board_panel(board_snapshots: list[BoardSnapshotView]) -> Panel:
     )
 
 
+def render_board_delta_panel(board_deltas: list[BoardDeltaView]) -> Panel:
+    if not board_deltas:
+        return Panel("No board deltas", title="Board Deltas", border_style="magenta")
+
+    panels = []
+    for board in board_deltas:
+        delta_table = Table.grid(expand=True)
+        delta_table.add_column(justify="right", style="red")
+        delta_table.add_column(justify="right")
+        delta_table.add_column(justify="right", style="green")
+        delta_table.add_row("Ask Chg", "Ask Sz", "")
+        for ask in reversed(board.asks[:5]):
+            delta_table.add_row(format_price(ask.price), format_size(ask.size), "")
+        delta_table.add_row(
+            Text("MID", style="bold magenta"),
+            Text(format_price(board.mid_price), style="bold magenta"),
+            Text(board.received_at.split(" ")[-1], style="dim"),
+        )
+        delta_table.add_row("", "Bid Sz", "Bid Chg")
+        for bid in board.bids[:5]:
+            delta_table.add_row("", format_size(bid.size), format_price(bid.price))
+        panels.append(Panel(delta_table, title=board.product_code, border_style="magenta"))
+    return Panel(
+        Columns(panels, equal=True, expand=True),
+        title="Board Deltas",
+        border_style="magenta",
+    )
+
+
 def filters_to_text(
     product_codes: list[str],
     event_types: list[str],
@@ -311,17 +389,20 @@ def render_compact_watch(
     data: DashboardData,
     series: dict[str, list[int]],
     config: DashboardConfig,
+    dedupe_view: str = "both",
     filters_text: str = "all",
 ) -> Group:
     return Group(
-        render_overview(data, filters_text=filters_text),
+        render_overview(data, dedupe_view=dedupe_view, filters_text=filters_text),
         render_alert_panel(data),
         render_market_panel(data.ticker_points),
         render_collector_panel(data, config.collector_stale_seconds),
         render_collector_bias_panel(data),
+        render_collector_event_type_bias_panel(data),
         render_executions_panel(data.executions),
         render_freshness(data, config),
-        render_throughput(data, series),
+        render_throughput(data, series, dedupe_view=dedupe_view),
         render_board_panel(data.board_snapshots),
+        render_board_delta_panel(data.board_deltas),
         render_latest_events(data.latest_events),
     )

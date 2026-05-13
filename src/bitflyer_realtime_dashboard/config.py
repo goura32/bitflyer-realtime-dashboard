@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from dotenv import dotenv_values
@@ -27,6 +27,7 @@ class DashboardConfig(BaseModel):
     default_limit: int = 20
     chart_points: int = 30
     board_depth: int = 5
+    dedupe_view: Literal["raw", "unique", "both"] = "both"
     product_codes: list[str] = Field(default_factory=list)
     event_types: list[str] = Field(default_factory=list)
     channels: list[str] = Field(default_factory=list)
@@ -86,6 +87,7 @@ def _apply_env(data: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
         "BOARD_DELTA_STALE_SECONDS": ("dashboard", "board_delta_stale_seconds", int),
         "BOARD_SNAPSHOT_STALE_SECONDS": ("dashboard", "board_snapshot_stale_seconds", int),
         "COLLECTOR_STALE_SECONDS": ("dashboard", "collector_stale_seconds", int),
+        "DEDUPE_VIEW": ("dashboard", "dedupe_view", str),
     }
     for key, (section, field_name, caster) in mapping.items():
         if key not in env:

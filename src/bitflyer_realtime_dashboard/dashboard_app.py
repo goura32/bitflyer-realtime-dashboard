@@ -14,8 +14,10 @@ from bitflyer_realtime_dashboard.models import DashboardData, EventFilters
 from bitflyer_realtime_dashboard.rendering import (
     filters_to_text,
     render_alert_panel,
+    render_board_delta_panel,
     render_board_panel,
     render_collector_bias_panel,
+    render_collector_event_type_bias_panel,
     render_collector_panel,
     render_executions_panel,
     render_freshness,
@@ -42,6 +44,9 @@ class DashboardApp(App[None]):
     #deep {
       height: 18;
     }
+    #board_row {
+      height: 18;
+    }
     #bottom {
       height: 1fr;
     }
@@ -64,6 +69,7 @@ class DashboardApp(App[None]):
         ("5", "lookback_5m", "5m"),
         ("f", "lookback_15m", "15m"),
         ("0", "lookback_all", "All"),
+        ("d", "cycle_dedupe", "Dedupe"),
     ]
 
     selected_event_index = reactive(0)
@@ -87,9 +93,12 @@ class DashboardApp(App[None]):
             yield Static(classes="panel", id="throughput")
         with Horizontal(id="lower"):
             yield Static(classes="panel", id="collector_bias")
+            yield Static(classes="panel", id="collector_event_bias")
             yield Static(classes="panel", id="executions")
         with Horizontal(id="deep"):
             yield Static(classes="panel", id="freshness")
+            yield Static(classes="panel", id="board_delta")
+        with Horizontal(id="board_row"):
             yield Static(classes="panel", id="board")
         with Horizontal(id="bottom"):
             latest = DataTable(id="latest")
@@ -117,7 +126,7 @@ class DashboardApp(App[None]):
             self.filters.event_types,
             self.filters.channels,
             self.filters.since_minutes,
-        )
+        ) + f" | dedupe={self.config.dashboard.dedupe_view}"
 
     def action_refresh(self) -> None:
         self.refresh_data()
@@ -142,14 +151,31 @@ class DashboardApp(App[None]):
         self._update_subtitle()
         self.refresh_data()
 
+    def action_cycle_dedupe(self) -> None:
+        next_mode = {
+            "both": "raw",
+            "raw": "unique",
+            "unique": "both",
+        }
+        self.config.dashboard.dedupe_view = next_mode.get(
+            self.config.dashboard.dedupe_view,
+            "both",
+        )
+        self._update_subtitle()
+        self.refresh_data()
+
     def refresh_data(self) -> None:
         data = self.repository.fetch_dashboard_data(self.filters, self.limit)
         self.latest_data = data
-        series = self.repository.throughput_by_series(data.throughput)
+        series = self.repository.throughput_by_series(
+            data.throughput,
+            dedupe_view=self.config.dashboard.dedupe_view,
+        )
 
         self.query_one("#overview", Static).update(
             render_overview(
                 data,
+                dedupe_view=self.config.dashboard.dedupe_view,
                 filters_text=filters_to_text(
                     self.filters.product_codes,
                     self.filters.event_types,
@@ -163,11 +189,23 @@ class DashboardApp(App[None]):
         self.query_one("#collectors", Static).update(
             render_collector_panel(data, self.config.dashboard.collector_stale_seconds)
         )
-        self.query_one("#throughput", Static).update(render_throughput(data, series))
+        self.query_one("#throughput", Static).update(
+            render_throughput(
+                data,
+                series,
+                dedupe_view=self.config.dashboard.dedupe_view,
+            )
+        )
         self.query_one("#collector_bias", Static).update(render_collector_bias_panel(data))
+        self.query_one("#collector_event_bias", Static).update(
+            render_collector_event_type_bias_panel(data)
+        )
         self.query_one("#executions", Static).update(render_executions_panel(data.executions))
         self.query_one("#freshness", Static).update(
             render_freshness(data, self.config.dashboard)
+        )
+        self.query_one("#board_delta", Static).update(
+            render_board_delta_panel(data.board_deltas)
         )
         self.query_one("#board", Static).update(render_board_panel(data.board_snapshots))
         self.query_one("#latest", DataTable).clear()

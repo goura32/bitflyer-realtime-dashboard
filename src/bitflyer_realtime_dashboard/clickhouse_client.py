@@ -9,6 +9,7 @@ import clickhouse_connect
 from bitflyer_realtime_dashboard.config import AppConfig
 from bitflyer_realtime_dashboard.models import (
     AlertItem,
+    BoardDeltaView,
     BoardLevel,
     BoardSnapshotView,
     CollectorBiasRow,
@@ -63,6 +64,31 @@ def parse_board_snapshot(
     ]
     mid_price = payload.get("mid_price")
     return BoardSnapshotView(
+        product_code=product_code,
+        received_at=received_at,
+        mid_price=float(mid_price) if mid_price is not None else None,
+        bids=bids,
+        asks=asks,
+    )
+
+
+def parse_board_delta(
+    payload_json: str,
+    product_code: str,
+    received_at: str,
+    depth: int = 5,
+) -> BoardDeltaView:
+    payload = json.loads(payload_json)
+    bids = [
+        BoardLevel(price=float(level["price"]), size=float(level["size"]))
+        for level in payload.get("bids", [])[:depth]
+    ]
+    asks = [
+        BoardLevel(price=float(level["price"]), size=float(level["size"]))
+        for level in payload.get("asks", [])[:depth]
+    ]
+    mid_price = payload.get("mid_price")
+    return BoardDeltaView(
         product_code=product_code,
         received_at=received_at,
         mid_price=float(mid_price) if mid_price is not None else None,
@@ -177,10 +203,15 @@ class DashboardRepository:
             filters,
             depth=self.config.dashboard.board_depth,
         )
+        board_deltas = self.fetch_latest_board_deltas(
+            filters,
+            depth=self.config.dashboard.board_depth,
+        )
         executions = self.fetch_execution_summaries(filters, self.config.dashboard.chart_points)
         dedupe = self.fetch_dedupe_stats(filters)
         collectors = self.fetch_collector_status(filters)
-        collector_bias = self.fetch_collector_bias(filters)
+        collector_product_bias = self.fetch_collector_bias(filters, "product_code")
+        collector_event_type_bias = self.fetch_collector_bias(filters, "event_type")
         alerts = build_alerts(self.config, freshness, collectors)
         return DashboardData(
             overview=overview,
@@ -191,10 +222,12 @@ class DashboardRepository:
             throughput=throughput,
             ticker_points=ticker_points,
             board_snapshots=board_snapshots,
+            board_deltas=board_deltas,
             executions=executions,
             dedupe=dedupe,
             collectors=collectors,
-            collector_bias=collector_bias,
+            collector_product_bias=collector_product_bias,
+            collector_event_type_bias=collector_event_type_bias,
             alerts=alerts,
         )
 
@@ -206,17 +239,25 @@ class DashboardRepository:
             countIf(received_at >= now() - INTERVAL 1 MINUTE) AS rows_1m,
             countIf(received_at >= now() - INTERVAL 5 MINUTE) AS rows_5m,
             countIf(received_at >= now() - INTERVAL 15 MINUTE) AS rows_15m,
+            uniqExact(payload_hash) AS unique_total_rows,
+            uniqExactIf(payload_hash, received_at >= now() - INTERVAL 1 MINUTE) AS unique_rows_1m,
+            uniqExactIf(payload_hash, received_at >= now() - INTERVAL 5 MINUTE) AS unique_rows_5m,
+            uniqExactIf(payload_hash, received_at >= now() - INTERVAL 15 MINUTE) AS unique_rows_15m,
             max(received_at) AS latest_received_at
         FROM raw_events
         {where}
         """
         row = self.client.query(query, parameters=params).result_rows[0]
-        latest = row[4].isoformat() if row[4] is not None else None
+        latest = row[8].isoformat() if row[8] is not None else None
         return OverviewStats(
             total_rows=row[0],
             rows_1m=row[1],
             rows_5m=row[2],
             rows_15m=row[3],
+            unique_total_rows=row[4],
+            unique_rows_1m=row[5],
+            unique_rows_5m=row[6],
+            unique_rows_15m=row[7],
             latest_received_at=latest,
         )
 
@@ -303,7 +344,8 @@ class DashboardRepository:
             formatDateTime(toStartOfMinute(received_at), '%%Y-%%m-%%d %%H:%%M') AS minute_bucket,
             event_type,
             product_code,
-            count() AS count
+            count() AS count,
+            uniqExact(payload_hash) AS unique_count
         FROM raw_events
         {where}
           {time_clause}
@@ -318,17 +360,23 @@ class DashboardRepository:
                 event_type=row[1],
                 product_code=row[2],
                 count=row[3],
+                unique_count=row[4],
             )
             for row in rows
         ]
 
-    def throughput_by_series(self, rows: list[ThroughputRow]) -> dict[str, list[int]]:
+    def throughput_by_series(
+        self,
+        rows: list[ThroughputRow],
+        dedupe_view: str = "both",
+    ) -> dict[str, list[int]]:
         minute_buckets = sorted({row.minute_bucket for row in rows})
         indexed = {bucket: i for i, bucket in enumerate(minute_buckets)}
         series: dict[str, list[int]] = defaultdict(lambda: [0] * len(minute_buckets))
         for row in rows:
             key = f"{row.event_type}:{row.product_code}"
-            series[key][indexed[row.minute_bucket]] = row.count
+            value = row.unique_count if dedupe_view == "unique" else row.count
+            series[key][indexed[row.minute_bucket]] = value
         return dict(series)
 
     def fetch_dedupe_stats(self, filters: EventFilters) -> DedupeStats:
@@ -467,6 +515,40 @@ class DashboardRepository:
         rows = self.client.query(query, parameters=params).result_rows
         return [parse_board_snapshot(row[2], row[0], row[1], depth=depth) for row in rows]
 
+    def fetch_latest_board_deltas(
+        self,
+        filters: EventFilters,
+        depth: int = 5,
+        per_product_limit: int = 1,
+    ) -> list[BoardDeltaView]:
+        if filters.event_types and "board_delta" not in filters.event_types:
+            return []
+        params: dict[str, Any] = {"per_product_limit": per_product_limit}
+        product_where = ""
+        if filters.product_codes:
+            product_where = "AND product_code IN %(product_codes)s"
+            params["product_codes"] = filters.product_codes
+        query = f"""
+        SELECT
+            product_code,
+            toString(received_at) AS received_at,
+            payload_json
+        FROM (
+            SELECT
+                product_code,
+                received_at,
+                payload_json,
+                row_number() OVER (PARTITION BY product_code ORDER BY received_at DESC) AS rn
+            FROM raw_board_deltas
+            WHERE 1 = 1
+              {product_where}
+        )
+        WHERE rn <= %(per_product_limit)s
+        ORDER BY product_code ASC, received_at DESC
+        """
+        rows = self.client.query(query, parameters=params).result_rows
+        return [parse_board_delta(row[2], row[0], row[1], depth=depth) for row in rows]
+
     def fetch_execution_summaries(
         self,
         filters: EventFilters,
@@ -541,17 +623,21 @@ class DashboardRepository:
             )
         return summaries
 
-    def fetch_collector_bias(self, filters: EventFilters) -> list[CollectorBiasRow]:
+    def fetch_collector_bias(
+        self,
+        filters: EventFilters,
+        dimension: str,
+    ) -> list[CollectorBiasRow]:
         where, params = build_where_clause(filters)
         query = f"""
         WITH scoped AS (
             SELECT
                 collector_instance_id,
-                product_code,
+                {dimension} AS group_key,
                 count() AS event_count
             FROM raw_events
             {where}
-            GROUP BY collector_instance_id, product_code
+            GROUP BY collector_instance_id, group_key
         ),
         totals AS (
             SELECT
@@ -562,18 +648,18 @@ class DashboardRepository:
         )
         SELECT
             scoped.collector_instance_id,
-            scoped.product_code,
+            scoped.group_key,
             scoped.event_count,
             scoped.event_count / totals.total_count AS share_ratio
         FROM scoped
         INNER JOIN totals USING (collector_instance_id)
-        ORDER BY scoped.collector_instance_id ASC, scoped.event_count DESC, scoped.product_code ASC
+        ORDER BY scoped.collector_instance_id ASC, scoped.event_count DESC, scoped.group_key ASC
         """
         rows = self.client.query(query, parameters=params).result_rows
         return [
             CollectorBiasRow(
                 collector_instance_id=row[0],
-                product_code=row[1],
+                group_key=row[1],
                 event_count=row[2],
                 share_ratio=float(row[3]),
             )
