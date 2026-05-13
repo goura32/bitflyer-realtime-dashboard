@@ -12,6 +12,7 @@ from rich.text import Text
 from bitflyer_realtime_dashboard.config import DashboardConfig
 from bitflyer_realtime_dashboard.formatting import (
     age_style,
+    flow_bar,
     format_price,
     format_size,
     sparkline,
@@ -309,6 +310,7 @@ def render_executions_panel(executions: list[ExecutionSummary]) -> Panel:
     table.add_column("Size", justify="right")
     table.add_column("Flow", justify="right")
     table.add_column("Bias", justify="right")
+    table.add_column("Heat")
     table.add_column("Chart")
     for row in executions:
         flow = f"B{row.buy_count}/S{row.sell_count}"
@@ -327,6 +329,7 @@ def render_executions_panel(executions: list[ExecutionSummary]) -> Panel:
             format_size(row.total_size),
             flow,
             bias,
+            flow_bar(row.buy_size, row.sell_size),
             sparkline(row.price_series),
         )
     return Panel(table, title="Executions", border_style="magenta")

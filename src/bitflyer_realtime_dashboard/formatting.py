@@ -56,3 +56,13 @@ def format_size(value: float | None) -> str:
     if value is None:
         return "-"
     return f"{value:,.4f}".rstrip("0").rstrip(".")
+
+
+def flow_bar(buy_size: float, sell_size: float, width: int = 12) -> str:
+    total = buy_size + sell_size
+    if total <= 0:
+        return "·" * width
+    buy_width = round(width * (buy_size / total))
+    buy_width = max(0, min(width, buy_width))
+    sell_width = width - buy_width
+    return "█" * buy_width + "░" * sell_width
