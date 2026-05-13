@@ -12,9 +12,10 @@ from rich.text import Text
 from bitflyer_realtime_dashboard.config import DashboardConfig
 from bitflyer_realtime_dashboard.formatting import (
     age_style,
-    flow_bar,
+    colored_flow_bar,
     format_price,
     format_size,
+    heat_style,
     sparkline,
     style_event_type,
 )
@@ -38,6 +39,16 @@ def _format_change(current: float | None, previous: float | None) -> Text:
     if change < 0:
         return Text(format_price(change), style="red")
     return Text(format_price(change), style="dim")
+
+
+def _direction_text(current: float | None, previous: float | None) -> Text:
+    if current is None or previous is None:
+        return Text("flat", style="dim")
+    if current > previous:
+        return Text("up", style="green")
+    if current < previous:
+        return Text("down", style="red")
+    return Text("flat", style="dim")
 
 
 def _stale_threshold(config: DashboardConfig, event_type: str) -> int:
@@ -310,6 +321,7 @@ def render_executions_panel(executions: list[ExecutionSummary]) -> Panel:
     table.add_column("Size", justify="right")
     table.add_column("Flow", justify="right")
     table.add_column("Bias", justify="right")
+    table.add_column("Lead")
     table.add_column("Heat")
     table.add_column("Chart")
     for row in executions:
@@ -321,6 +333,12 @@ def render_executions_panel(executions: list[ExecutionSummary]) -> Panel:
             bias = Text(format_size(net_size), style="red")
         else:
             bias = Text(format_size(net_size), style="dim")
+        if row.buy_size > row.sell_size:
+            lead = Text("BUY", style="bold green")
+        elif row.buy_size < row.sell_size:
+            lead = Text("SELL", style="bold red")
+        else:
+            lead = Text("EVEN", style="dim")
         table.add_row(
             row.product_code,
             format_price(row.latest_price),
@@ -329,7 +347,8 @@ def render_executions_panel(executions: list[ExecutionSummary]) -> Panel:
             format_size(row.total_size),
             flow,
             bias,
-            flow_bar(row.buy_size, row.sell_size),
+            lead,
+            colored_flow_bar(row.buy_size, row.sell_size),
             sparkline(row.price_series),
         )
     return Panel(table, title="Executions", border_style="magenta")
@@ -375,10 +394,17 @@ def render_board_delta_panel(board_deltas: list[BoardDeltaView]) -> Panel:
     panels = []
     for product_code in sorted(latest_by_product):
         board = latest_by_product[product_code]
+        max_ask_size = max((level.size for level in board.asks), default=0.0)
+        max_bid_size = max((level.size for level in board.bids), default=0.0)
         delta_table = Table.grid(expand=True)
         delta_table.add_column(justify="right", style="red")
         delta_table.add_column(justify="right")
         delta_table.add_column(justify="right", style="green")
+        delta_table.add_row(
+            Text("Dir", style="bold"),
+            _direction_text(board.mid_price, board.previous_mid_price),
+            _direction_text(board.spread, board.previous_spread),
+        )
         delta_table.add_row(
             Text("MID", style="bold magenta"),
             Text(format_price(board.mid_price), style="bold magenta"),
@@ -391,7 +417,14 @@ def render_board_delta_panel(board_deltas: list[BoardDeltaView]) -> Panel:
         )
         delta_table.add_row("Ask Chg", "Ask Sz", "")
         for ask in reversed(board.asks[:5]):
-            delta_table.add_row(format_price(ask.price), format_size(ask.size), "")
+            delta_table.add_row(
+                format_price(ask.price),
+                Text(
+                    format_size(ask.size),
+                    style=heat_style(ask.size, max_ask_size, "red"),
+                ),
+                "",
+            )
         delta_table.add_row(
             Text("At", style="dim"),
             Text(board.received_at.split(" ")[-1], style="dim"),
@@ -399,7 +432,14 @@ def render_board_delta_panel(board_deltas: list[BoardDeltaView]) -> Panel:
         )
         delta_table.add_row("", "Bid Sz", "Bid Chg")
         for bid in board.bids[:5]:
-            delta_table.add_row("", format_size(bid.size), format_price(bid.price))
+            delta_table.add_row(
+                "",
+                Text(
+                    format_size(bid.size),
+                    style=heat_style(bid.size, max_bid_size, "green"),
+                ),
+                format_price(bid.price),
+            )
         panels.append(Panel(delta_table, title=board.product_code, border_style="magenta"))
     return Panel(
         Columns(panels, equal=True, expand=True),

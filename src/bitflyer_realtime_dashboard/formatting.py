@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from rich.text import Text
+
 EVENT_TYPE_STYLES = {
     "executions": "green",
     "ticker": "cyan",
@@ -66,3 +68,31 @@ def flow_bar(buy_size: float, sell_size: float, width: int = 12) -> str:
     buy_width = max(0, min(width, buy_width))
     sell_width = width - buy_width
     return "█" * buy_width + "░" * sell_width
+
+
+def colored_flow_bar(buy_size: float, sell_size: float, width: int = 12) -> Text:
+    total = buy_size + sell_size
+    if total <= 0:
+        return Text("·" * width, style="dim")
+    buy_width = round(width * (buy_size / total))
+    buy_width = max(0, min(width, buy_width))
+    sell_width = width - buy_width
+    bar = Text()
+    if buy_width:
+        bar.append("█" * buy_width, style="green")
+    if sell_width:
+        bar.append("█" * sell_width, style="red")
+    return bar
+
+
+def heat_style(value: float | None, max_value: float | None, palette: str) -> str:
+    if value is None or max_value is None or max_value <= 0:
+        return "dim"
+    ratio = value / max_value
+    if ratio >= 0.8:
+        return f"bold {palette}"
+    if ratio >= 0.5:
+        return palette
+    if ratio >= 0.2:
+        return f"{palette} dim"
+    return "dim"
