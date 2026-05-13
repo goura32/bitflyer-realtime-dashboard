@@ -307,14 +307,26 @@ def render_executions_panel(executions: list[ExecutionSummary]) -> Panel:
     table.add_column("Range")
     table.add_column("Trades", justify="right")
     table.add_column("Size", justify="right")
+    table.add_column("Flow", justify="right")
+    table.add_column("Bias", justify="right")
     table.add_column("Chart")
     for row in executions:
+        flow = f"B{row.buy_count}/S{row.sell_count}"
+        net_size = row.buy_size - row.sell_size
+        if net_size > 0:
+            bias = Text(f"+{format_size(net_size)}", style="green")
+        elif net_size < 0:
+            bias = Text(format_size(net_size), style="red")
+        else:
+            bias = Text(format_size(net_size), style="dim")
         table.add_row(
             row.product_code,
             format_price(row.latest_price),
             f"{format_price(row.min_price)} - {format_price(row.max_price)}",
             str(row.trade_count),
             format_size(row.total_size),
+            flow,
+            bias,
             sparkline(row.price_series),
         )
     return Panel(table, title="Executions", border_style="magenta")

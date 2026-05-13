@@ -112,6 +112,10 @@ class ExecutionSummary:
     max_price: float | None
     total_size: float
     trade_count: int
+    buy_count: int = 0
+    sell_count: int = 0
+    buy_size: float = 0.0
+    sell_size: float = 0.0
     price_series: list[float] = field(default_factory=list)
 
 

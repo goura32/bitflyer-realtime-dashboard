@@ -137,6 +137,56 @@ def enrich_board_delta_views(deltas: list[BoardDeltaView]) -> list[BoardDeltaVie
     return enriched
 
 
+def summarize_execution_payload_rows(
+    product_code: str,
+    payload_rows: list[tuple[str, str]],
+    points_per_product: int,
+) -> ExecutionSummary:
+    prices: list[float] = []
+    total_size = 0.0
+    trade_count = 0
+    buy_count = 0
+    sell_count = 0
+    buy_size = 0.0
+    sell_size = 0.0
+
+    for _, payload_json in payload_rows:
+        payload = json.loads(payload_json)
+        executions = payload if isinstance(payload, list) else [payload]
+        for execution in executions:
+            if not isinstance(execution, dict):
+                continue
+            price = execution.get("price")
+            size = execution.get("size")
+            if price is None:
+                continue
+            side = str(execution.get("side", "")).upper()
+            size_value = float(size) if size is not None else 0.0
+            prices.append(float(price))
+            total_size += size_value
+            trade_count += 1
+            if side == "BUY":
+                buy_count += 1
+                buy_size += size_value
+            elif side == "SELL":
+                sell_count += 1
+                sell_size += size_value
+
+    return ExecutionSummary(
+        product_code=product_code,
+        min_price=min(prices) if prices else None,
+        max_price=max(prices) if prices else None,
+        latest_price=prices[-1] if prices else None,
+        total_size=total_size,
+        trade_count=trade_count,
+        buy_count=buy_count,
+        sell_count=sell_count,
+        buy_size=buy_size,
+        sell_size=sell_size,
+        price_series=prices[-points_per_product:],
+    )
+
+
 def stale_threshold_for_event_type(config: AppConfig, event_type: str) -> int:
     thresholds = {
         "ticker": config.dashboard.ticker_stale_seconds,
@@ -640,36 +690,10 @@ class DashboardRepository:
         for product_code, received_at, payload_json in rows:
             grouped[product_code].append((received_at, payload_json))
 
-        summaries: list[ExecutionSummary] = []
-        for product_code, payload_rows in sorted(grouped.items()):
-            prices: list[float] = []
-            total_size = 0.0
-            trade_count = 0
-            for _, payload_json in payload_rows:
-                payload = json.loads(payload_json)
-                executions = payload if isinstance(payload, list) else [payload]
-                for execution in executions:
-                    if not isinstance(execution, dict):
-                        continue
-                    price = execution.get("price")
-                    size = execution.get("size")
-                    if price is None:
-                        continue
-                    prices.append(float(price))
-                    total_size += float(size) if size is not None else 0.0
-                    trade_count += 1
-            summaries.append(
-                ExecutionSummary(
-                    product_code=product_code,
-                    min_price=min(prices) if prices else None,
-                    max_price=max(prices) if prices else None,
-                    latest_price=prices[-1] if prices else None,
-                    total_size=total_size,
-                    trade_count=trade_count,
-                    price_series=prices[-points_per_product:],
-                )
-            )
-        return summaries
+        return [
+            summarize_execution_payload_rows(product_code, payload_rows, points_per_product)
+            for product_code, payload_rows in sorted(grouped.items())
+        ]
 
     def fetch_collector_bias(
         self,
