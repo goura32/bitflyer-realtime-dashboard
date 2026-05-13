@@ -17,7 +17,12 @@ dashboard:
     )
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "CLICKHOUSE_HOST=env-host\nSTALE_AFTER_SECONDS=30\n",
+        (
+            "CLICKHOUSE_HOST=env-host\n"
+            "STALE_AFTER_SECONDS=30\n"
+            "EXECUTIONS_STALE_SECONDS=45\n"
+            "COLLECTOR_STALE_SECONDS=60\n"
+        ),
         encoding="utf-8",
     )
 
@@ -26,4 +31,5 @@ dashboard:
     assert config.clickhouse.host == "env-host"
     assert config.dashboard.refresh_seconds == 5
     assert config.dashboard.stale_after_seconds == 30
-
+    assert config.dashboard.executions_stale_seconds == 45
+    assert config.dashboard.collector_stale_seconds == 60

@@ -15,7 +15,9 @@ from bitflyer_realtime_dashboard.rendering import (
     filters_to_text,
     render_alert_panel,
     render_board_panel,
+    render_collector_bias_panel,
     render_collector_panel,
+    render_executions_panel,
     render_freshness,
     render_market_panel,
     render_overview,
@@ -32,9 +34,12 @@ class DashboardApp(App[None]):
       height: 16;
     }
     #middle {
-      height: 13;
+        height: 13;
     }
     #lower {
+      height: 14;
+    }
+    #deep {
       height: 18;
     }
     #bottom {
@@ -81,6 +86,9 @@ class DashboardApp(App[None]):
             yield Static(classes="panel", id="collectors")
             yield Static(classes="panel", id="throughput")
         with Horizontal(id="lower"):
+            yield Static(classes="panel", id="collector_bias")
+            yield Static(classes="panel", id="executions")
+        with Horizontal(id="deep"):
             yield Static(classes="panel", id="freshness")
             yield Static(classes="panel", id="board")
         with Horizontal(id="bottom"):
@@ -153,11 +161,13 @@ class DashboardApp(App[None]):
         self.query_one("#market", Static).update(render_market_panel(data.ticker_points))
         self.query_one("#alerts", Static).update(render_alert_panel(data))
         self.query_one("#collectors", Static).update(
-            render_collector_panel(data, self.config.dashboard.stale_after_seconds)
+            render_collector_panel(data, self.config.dashboard.collector_stale_seconds)
         )
         self.query_one("#throughput", Static).update(render_throughput(data, series))
+        self.query_one("#collector_bias", Static).update(render_collector_bias_panel(data))
+        self.query_one("#executions", Static).update(render_executions_panel(data.executions))
         self.query_one("#freshness", Static).update(
-            render_freshness(data, self.config.dashboard.stale_after_seconds)
+            render_freshness(data, self.config.dashboard)
         )
         self.query_one("#board", Static).update(render_board_panel(data.board_snapshots))
         self.query_one("#latest", DataTable).clear()

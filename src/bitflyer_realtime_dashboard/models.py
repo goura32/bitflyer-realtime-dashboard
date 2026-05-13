@@ -78,6 +78,33 @@ class BoardSnapshotView:
 
 
 @dataclass(slots=True)
+class ExecutionPoint:
+    product_code: str
+    exec_date: str
+    price: float
+    size: float
+
+
+@dataclass(slots=True)
+class ExecutionSummary:
+    product_code: str
+    latest_price: float | None
+    min_price: float | None
+    max_price: float | None
+    total_size: float
+    trade_count: int
+    price_series: list[float] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class CollectorBiasRow:
+    collector_instance_id: str
+    product_code: str
+    event_count: int
+    share_ratio: float
+
+
+@dataclass(slots=True)
 class DedupeStats:
     total_rows: int
     unique_hashes: int
@@ -115,6 +142,8 @@ class DashboardData:
     throughput: list[ThroughputRow]
     ticker_points: list[TickerPoint]
     board_snapshots: list[BoardSnapshotView]
+    executions: list[ExecutionSummary]
     dedupe: DedupeStats
     collectors: list[CollectorStatus]
+    collector_bias: list[CollectorBiasRow]
     alerts: list[AlertItem]

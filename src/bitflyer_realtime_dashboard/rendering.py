@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from bitflyer_realtime_dashboard.config import DashboardConfig
 from bitflyer_realtime_dashboard.formatting import (
     age_style,
     format_price,
@@ -19,9 +20,20 @@ from bitflyer_realtime_dashboard.formatting import (
 from bitflyer_realtime_dashboard.models import (
     BoardSnapshotView,
     DashboardData,
+    ExecutionSummary,
     LatestEvent,
     TickerPoint,
 )
+
+
+def _stale_threshold(config: DashboardConfig, event_type: str) -> int:
+    thresholds = {
+        "ticker": config.ticker_stale_seconds,
+        "executions": config.executions_stale_seconds,
+        "board_delta": config.board_delta_stale_seconds,
+        "board_snapshot": config.board_snapshot_stale_seconds,
+    }
+    return thresholds.get(event_type, config.stale_after_seconds)
 
 
 def render_overview(data: DashboardData, filters_text: str = "all") -> Panel:
@@ -75,7 +87,7 @@ def render_group_counts(title: str, counts: list) -> Table:
     return table
 
 
-def render_freshness(data: DashboardData, stale_after_seconds: int) -> Table:
+def render_freshness(data: DashboardData, config: DashboardConfig) -> Table:
     event_types = sorted({row.event_type for row in data.freshness})
     product_codes = sorted({row.product_code for row in data.freshness})
     matrix = {(row.event_type, row.product_code): row for row in data.freshness}
@@ -92,7 +104,7 @@ def render_freshness(data: DashboardData, stale_after_seconds: int) -> Table:
             if row is None:
                 cells.append(Text("-", style="dim"))
                 continue
-            style = age_style(row.age_seconds, stale_after_seconds)
+            style = age_style(row.age_seconds, _stale_threshold(config, event_type))
             cell = Text(f"{row.age_seconds}s", style=style)
             cells.append(cell)
         table.add_row(event_type, *cells)
@@ -184,7 +196,7 @@ def render_alert_panel(data: DashboardData) -> Panel:
     return Panel(table, title="Alerts", border_style="red" if data.alerts else "green")
 
 
-def render_collector_panel(data: DashboardData, stale_after_seconds: int) -> Panel:
+def render_collector_panel(data: DashboardData, collector_stale_seconds: int) -> Panel:
     table = Table(expand=True)
     table.add_column("Collector")
     table.add_column("Age", justify="right")
@@ -195,7 +207,7 @@ def render_collector_panel(data: DashboardData, stale_after_seconds: int) -> Pan
         table.add_row("-", "-", "-", "-", "-")
     else:
         for row in data.collectors:
-            style = age_style(row.age_seconds, stale_after_seconds * 2)
+            style = age_style(row.age_seconds, collector_stale_seconds)
             table.add_row(
                 row.collector_instance_id,
                 Text(str(row.age_seconds), style=style),
@@ -204,6 +216,48 @@ def render_collector_panel(data: DashboardData, stale_after_seconds: int) -> Pan
                 str(row.total_rows),
             )
     return Panel(table, title="Collectors", border_style="blue")
+
+
+def render_collector_bias_panel(data: DashboardData) -> Panel:
+    table = Table(expand=True)
+    table.add_column("Collector")
+    table.add_column("Product")
+    table.add_column("Count", justify="right")
+    table.add_column("Share", justify="right")
+    rows = data.collector_bias[:12]
+    if not rows:
+        table.add_row("-", "-", "-", "-")
+    else:
+        for row in rows:
+            table.add_row(
+                row.collector_instance_id,
+                row.product_code,
+                str(row.event_count),
+                f"{row.share_ratio * 100:.1f}%",
+            )
+    return Panel(table, title="Collector Bias", border_style="blue")
+
+
+def render_executions_panel(executions: list[ExecutionSummary]) -> Panel:
+    if not executions:
+        return Panel("No executions data", title="Executions", border_style="magenta")
+    table = Table(expand=True)
+    table.add_column("Product")
+    table.add_column("Last", justify="right")
+    table.add_column("Range")
+    table.add_column("Trades", justify="right")
+    table.add_column("Size", justify="right")
+    table.add_column("Chart")
+    for row in executions:
+        table.add_row(
+            row.product_code,
+            format_price(row.latest_price),
+            f"{format_price(row.min_price)} - {format_price(row.max_price)}",
+            str(row.trade_count),
+            format_size(row.total_size),
+            sparkline(row.price_series),
+        )
+    return Panel(table, title="Executions", border_style="magenta")
 
 
 def render_board_panel(board_snapshots: list[BoardSnapshotView]) -> Panel:
@@ -256,15 +310,17 @@ def filters_to_text(
 def render_compact_watch(
     data: DashboardData,
     series: dict[str, list[int]],
-    stale_after_seconds: int,
+    config: DashboardConfig,
     filters_text: str = "all",
 ) -> Group:
     return Group(
         render_overview(data, filters_text=filters_text),
         render_alert_panel(data),
         render_market_panel(data.ticker_points),
-        render_collector_panel(data, stale_after_seconds),
-        render_freshness(data, stale_after_seconds),
+        render_collector_panel(data, config.collector_stale_seconds),
+        render_collector_bias_panel(data),
+        render_executions_panel(data.executions),
+        render_freshness(data, config),
         render_throughput(data, series),
         render_board_panel(data.board_snapshots),
         render_latest_events(data.latest_events),

@@ -19,7 +19,14 @@ class ClickHouseConfig(BaseModel):
 class DashboardConfig(BaseModel):
     refresh_seconds: float = 2.0
     stale_after_seconds: int = 15
+    ticker_stale_seconds: int = 15
+    executions_stale_seconds: int = 30
+    board_delta_stale_seconds: int = 30
+    board_snapshot_stale_seconds: int = 150
+    collector_stale_seconds: int = 30
     default_limit: int = 20
+    chart_points: int = 30
+    board_depth: int = 5
     product_codes: list[str] = Field(default_factory=list)
     event_types: list[str] = Field(default_factory=list)
     channels: list[str] = Field(default_factory=list)
@@ -74,6 +81,11 @@ def _apply_env(data: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
         "CLICKHOUSE_PASSWORD": ("clickhouse", "password", str),
         "REFRESH_SECONDS": ("dashboard", "refresh_seconds", float),
         "STALE_AFTER_SECONDS": ("dashboard", "stale_after_seconds", int),
+        "TICKER_STALE_SECONDS": ("dashboard", "ticker_stale_seconds", int),
+        "EXECUTIONS_STALE_SECONDS": ("dashboard", "executions_stale_seconds", int),
+        "BOARD_DELTA_STALE_SECONDS": ("dashboard", "board_delta_stale_seconds", int),
+        "BOARD_SNAPSHOT_STALE_SECONDS": ("dashboard", "board_snapshot_stale_seconds", int),
+        "COLLECTOR_STALE_SECONDS": ("dashboard", "collector_stale_seconds", int),
     }
     for key, (section, field_name, caster) in mapping.items():
         if key not in env:
@@ -92,4 +104,3 @@ def load_config(config_path: Path | None = None, env_path: Path | None = None) -
     merged = _deep_merge({}, _load_yaml(config_path))
     merged = _apply_env(merged, _load_env(env_path))
     return AppConfig.model_validate(merged)
-

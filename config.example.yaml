@@ -8,8 +8,14 @@ clickhouse:
 dashboard:
   refresh_seconds: 2.0
   stale_after_seconds: 15
+  ticker_stale_seconds: 15
+  executions_stale_seconds: 30
+  board_delta_stale_seconds: 30
+  board_snapshot_stale_seconds: 150
+  collector_stale_seconds: 30
   default_limit: 20
+  chart_points: 30
+  board_depth: 5
   product_codes: []
   event_types: []
   channels: []
-

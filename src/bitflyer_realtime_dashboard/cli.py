@@ -14,8 +14,10 @@ from bitflyer_realtime_dashboard.rendering import (
     filters_to_text,
     render_alert_panel,
     render_board_panel,
+    render_collector_bias_panel,
     render_collector_panel,
     render_compact_watch,
+    render_executions_panel,
     render_freshness,
     render_group_counts,
     render_json_detail,
@@ -93,10 +95,12 @@ def snapshot(
     )
     console.print(render_alert_panel(data))
     console.print(render_market_panel(data.ticker_points))
-    console.print(render_collector_panel(data, cfg.dashboard.stale_after_seconds))
+    console.print(render_collector_panel(data, cfg.dashboard.collector_stale_seconds))
+    console.print(render_collector_bias_panel(data))
+    console.print(render_executions_panel(data.executions))
     console.print(render_group_counts("By Event Type", data.by_event_type))
     console.print(render_group_counts("By Product Code", data.by_product_code))
-    console.print(render_freshness(data, cfg.dashboard.stale_after_seconds))
+    console.print(render_freshness(data, cfg.dashboard))
     console.print(render_throughput(data, series))
     console.print(render_board_panel(data.board_snapshots))
     console.print(render_latest_events(data.latest_events))
@@ -148,7 +152,7 @@ def watch(
                 render_compact_watch(
                     data,
                     series,
-                    cfg.dashboard.stale_after_seconds,
+                    cfg.dashboard,
                     filters_text=filters_to_text(
                         filters.product_codes,
                         filters.event_types,

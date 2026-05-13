@@ -11,10 +11,12 @@ from bitflyer_realtime_dashboard.models import (
     AlertItem,
     BoardLevel,
     BoardSnapshotView,
+    CollectorBiasRow,
     CollectorStatus,
     DashboardData,
     DedupeStats,
     EventFilters,
+    ExecutionSummary,
     FreshnessRow,
     GroupCount,
     LatestEvent,
@@ -69,24 +71,24 @@ def parse_board_snapshot(
     )
 
 
-def stale_threshold_for_event_type(base_seconds: int, event_type: str) -> int:
-    multipliers = {
-        "ticker": 1,
-        "executions": 2,
-        "board_delta": 2,
-        "board_snapshot": 10,
+def stale_threshold_for_event_type(config: AppConfig, event_type: str) -> int:
+    thresholds = {
+        "ticker": config.dashboard.ticker_stale_seconds,
+        "executions": config.dashboard.executions_stale_seconds,
+        "board_delta": config.dashboard.board_delta_stale_seconds,
+        "board_snapshot": config.dashboard.board_snapshot_stale_seconds,
     }
-    return base_seconds * multipliers.get(event_type, 1)
+    return thresholds.get(event_type, config.dashboard.stale_after_seconds)
 
 
 def build_alerts(
+    config: AppConfig,
     freshness: list[FreshnessRow],
     collectors: list[CollectorStatus],
-    base_stale_after_seconds: int,
 ) -> list[AlertItem]:
     alerts: list[AlertItem] = []
     for row in freshness:
-        threshold = stale_threshold_for_event_type(base_stale_after_seconds, row.event_type)
+        threshold = stale_threshold_for_event_type(config, row.event_type)
         if row.age_seconds is not None and row.age_seconds >= threshold:
             severity = "critical" if row.age_seconds >= threshold * 2 else "warning"
             alerts.append(
@@ -98,11 +100,11 @@ def build_alerts(
                 )
             )
     for collector in collectors:
-        collector_threshold = base_stale_after_seconds * 2
+        collector_threshold = config.dashboard.collector_stale_seconds
         if collector.age_seconds is not None and collector.age_seconds >= collector_threshold:
             severity = (
                 "critical"
-                if collector.age_seconds >= base_stale_after_seconds * 4
+                if collector.age_seconds >= collector_threshold * 2
                 else "warning"
             )
             alerts.append(
@@ -170,11 +172,16 @@ class DashboardRepository:
         freshness = self.fetch_freshness(filters)
         latest_events = self.fetch_latest_events(filters, limit)
         throughput = self.fetch_throughput(filters)
-        ticker_points = self.fetch_ticker_points(filters)
-        board_snapshots = self.fetch_latest_board_snapshots(filters)
+        ticker_points = self.fetch_ticker_points(filters, self.config.dashboard.chart_points)
+        board_snapshots = self.fetch_latest_board_snapshots(
+            filters,
+            depth=self.config.dashboard.board_depth,
+        )
+        executions = self.fetch_execution_summaries(filters, self.config.dashboard.chart_points)
         dedupe = self.fetch_dedupe_stats(filters)
         collectors = self.fetch_collector_status(filters)
-        alerts = build_alerts(freshness, collectors, self.config.dashboard.stale_after_seconds)
+        collector_bias = self.fetch_collector_bias(filters)
+        alerts = build_alerts(self.config, freshness, collectors)
         return DashboardData(
             overview=overview,
             by_event_type=by_event_type,
@@ -184,8 +191,10 @@ class DashboardRepository:
             throughput=throughput,
             ticker_points=ticker_points,
             board_snapshots=board_snapshots,
+            executions=executions,
             dedupe=dedupe,
             collectors=collectors,
+            collector_bias=collector_bias,
             alerts=alerts,
         )
 
@@ -457,3 +466,116 @@ class DashboardRepository:
         """
         rows = self.client.query(query, parameters=params).result_rows
         return [parse_board_snapshot(row[2], row[0], row[1], depth=depth) for row in rows]
+
+    def fetch_execution_summaries(
+        self,
+        filters: EventFilters,
+        points_per_product: int = 30,
+    ) -> list[ExecutionSummary]:
+        if filters.event_types and "executions" not in filters.event_types:
+            return []
+        params: dict[str, Any] = {"points_per_product": points_per_product}
+        product_where = ""
+        if filters.product_codes:
+            product_where = "AND product_code IN %(product_codes)s"
+            params["product_codes"] = filters.product_codes
+        window_minutes = filters.since_minutes or 60
+        params["executions_window"] = window_minutes
+        query = f"""
+        SELECT
+            product_code,
+            toString(received_at) AS received_at,
+            payload_json
+        FROM (
+            SELECT
+                product_code,
+                received_at,
+                payload_json
+            FROM (
+                SELECT
+                    product_code,
+                    received_at,
+                    payload_json,
+                    row_number() OVER (PARTITION BY product_code ORDER BY received_at DESC) AS rn
+                FROM raw_executions
+                WHERE received_at >= now() - toIntervalMinute(%(executions_window)s)
+                  {product_where}
+            )
+            WHERE rn <= %(points_per_product)s
+            ORDER BY product_code ASC, received_at ASC
+        )
+        """
+        rows = self.client.query(query, parameters=params).result_rows
+        grouped: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for product_code, received_at, payload_json in rows:
+            grouped[product_code].append((received_at, payload_json))
+
+        summaries: list[ExecutionSummary] = []
+        for product_code, payload_rows in sorted(grouped.items()):
+            prices: list[float] = []
+            total_size = 0.0
+            trade_count = 0
+            for _, payload_json in payload_rows:
+                payload = json.loads(payload_json)
+                executions = payload if isinstance(payload, list) else [payload]
+                for execution in executions:
+                    if not isinstance(execution, dict):
+                        continue
+                    price = execution.get("price")
+                    size = execution.get("size")
+                    if price is None:
+                        continue
+                    prices.append(float(price))
+                    total_size += float(size) if size is not None else 0.0
+                    trade_count += 1
+            summaries.append(
+                ExecutionSummary(
+                    product_code=product_code,
+                    min_price=min(prices) if prices else None,
+                    max_price=max(prices) if prices else None,
+                    latest_price=prices[-1] if prices else None,
+                    total_size=total_size,
+                    trade_count=trade_count,
+                    price_series=prices[-points_per_product:],
+                )
+            )
+        return summaries
+
+    def fetch_collector_bias(self, filters: EventFilters) -> list[CollectorBiasRow]:
+        where, params = build_where_clause(filters)
+        query = f"""
+        WITH scoped AS (
+            SELECT
+                collector_instance_id,
+                product_code,
+                count() AS event_count
+            FROM raw_events
+            {where}
+            GROUP BY collector_instance_id, product_code
+        ),
+        totals AS (
+            SELECT
+                collector_instance_id,
+                sum(event_count) AS total_count
+            FROM scoped
+            GROUP BY collector_instance_id
+        )
+        SELECT
+            scoped.collector_instance_id,
+            scoped.product_code,
+            scoped.event_count,
+            scoped.event_count / totals.total_count AS share_ratio
+        FROM scoped
+        INNER JOIN totals USING (collector_instance_id)
+        ORDER BY scoped.collector_instance_id ASC, scoped.event_count DESC, scoped.product_code ASC
+        """
+        rows = self.client.query(query, parameters=params).result_rows
+        return [
+            CollectorBiasRow(
+                collector_instance_id=row[0],
+                product_code=row[1],
+                event_count=row[2],
+                share_ratio=float(row[3]),
+            )
+            for row in rows
+        ]
