@@ -1,0 +1,15 @@
+clickhouse:
+  host: "127.0.0.1"
+  port: 8123
+  database: "clickhouse"
+  username: "clickhouse"
+  password: ""
+
+dashboard:
+  refresh_seconds: 2.0
+  stale_after_seconds: 15
+  default_limit: 20
+  product_codes: []
+  event_types: []
+  channels: []
+
