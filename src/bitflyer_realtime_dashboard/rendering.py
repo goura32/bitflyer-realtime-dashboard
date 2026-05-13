@@ -28,6 +28,17 @@ from bitflyer_realtime_dashboard.models import (
 )
 
 
+def _format_change(current: float | None, previous: float | None) -> Text:
+    if current is None or previous is None:
+        return Text("-", style="dim")
+    change = current - previous
+    if change > 0:
+        return Text(f"+{format_price(change)}", style="green")
+    if change < 0:
+        return Text(format_price(change), style="red")
+    return Text(format_price(change), style="dim")
+
+
 def _stale_threshold(config: DashboardConfig, event_type: str) -> int:
     thresholds = {
         "ticker": config.ticker_stale_seconds,
@@ -342,19 +353,34 @@ def render_board_delta_panel(board_deltas: list[BoardDeltaView]) -> Panel:
     if not board_deltas:
         return Panel("No board deltas", title="Board Deltas", border_style="magenta")
 
-    panels = []
+    latest_by_product: dict[str, BoardDeltaView] = {}
     for board in board_deltas:
+        latest_by_product.setdefault(board.product_code, board)
+
+    panels = []
+    for product_code in sorted(latest_by_product):
+        board = latest_by_product[product_code]
         delta_table = Table.grid(expand=True)
         delta_table.add_column(justify="right", style="red")
         delta_table.add_column(justify="right")
         delta_table.add_column(justify="right", style="green")
+        delta_table.add_row(
+            Text("MID", style="bold magenta"),
+            Text(format_price(board.mid_price), style="bold magenta"),
+            _format_change(board.mid_price, board.previous_mid_price),
+        )
+        delta_table.add_row(
+            Text("Spread", style="bold"),
+            Text(format_price(board.spread), style="bold"),
+            _format_change(board.spread, board.previous_spread),
+        )
         delta_table.add_row("Ask Chg", "Ask Sz", "")
         for ask in reversed(board.asks[:5]):
             delta_table.add_row(format_price(ask.price), format_size(ask.size), "")
         delta_table.add_row(
-            Text("MID", style="bold magenta"),
-            Text(format_price(board.mid_price), style="bold magenta"),
+            Text("At", style="dim"),
             Text(board.received_at.split(" ")[-1], style="dim"),
+            "",
         )
         delta_table.add_row("", "Bid Sz", "Bid Chg")
         for bid in board.bids[:5]:

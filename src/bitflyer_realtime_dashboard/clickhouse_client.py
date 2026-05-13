@@ -88,13 +88,53 @@ def parse_board_delta(
         for level in payload.get("asks", [])[:depth]
     ]
     mid_price = payload.get("mid_price")
+    best_bid = bids[0].price if bids else None
+    best_ask = asks[0].price if asks else None
+    spread = best_ask - best_bid if best_bid is not None and best_ask is not None else None
     return BoardDeltaView(
         product_code=product_code,
         received_at=received_at,
         mid_price=float(mid_price) if mid_price is not None else None,
+        best_bid=best_bid,
+        best_ask=best_ask,
+        spread=spread,
         bids=bids,
         asks=asks,
     )
+
+
+def enrich_board_delta_views(deltas: list[BoardDeltaView]) -> list[BoardDeltaView]:
+    enriched: list[BoardDeltaView] = []
+    for current, previous in zip(deltas, deltas[1:], strict=False):
+        enriched.append(
+            BoardDeltaView(
+                product_code=current.product_code,
+                received_at=current.received_at,
+                mid_price=current.mid_price,
+                best_bid=current.best_bid,
+                best_ask=current.best_ask,
+                spread=current.spread,
+                previous_mid_price=previous.mid_price,
+                previous_spread=previous.spread,
+                bids=current.bids,
+                asks=current.asks,
+            )
+        )
+    if deltas:
+        last = deltas[-1]
+        enriched.append(
+            BoardDeltaView(
+                product_code=last.product_code,
+                received_at=last.received_at,
+                mid_price=last.mid_price,
+                best_bid=last.best_bid,
+                best_ask=last.best_ask,
+                spread=last.spread,
+                bids=last.bids,
+                asks=last.asks,
+            )
+        )
+    return enriched
 
 
 def stale_threshold_for_event_type(config: AppConfig, event_type: str) -> int:
@@ -519,7 +559,7 @@ class DashboardRepository:
         self,
         filters: EventFilters,
         depth: int = 5,
-        per_product_limit: int = 1,
+        per_product_limit: int = 2,
     ) -> list[BoardDeltaView]:
         if filters.event_types and "board_delta" not in filters.event_types:
             return []
@@ -547,7 +587,15 @@ class DashboardRepository:
         ORDER BY product_code ASC, received_at DESC
         """
         rows = self.client.query(query, parameters=params).result_rows
-        return [parse_board_delta(row[2], row[0], row[1], depth=depth) for row in rows]
+        grouped: dict[str, list[BoardDeltaView]] = defaultdict(list)
+        for product_code, received_at, payload_json in rows:
+            grouped[product_code].append(
+                parse_board_delta(payload_json, product_code, received_at, depth=depth)
+            )
+        views: list[BoardDeltaView] = []
+        for product_code in sorted(grouped):
+            views.extend(enrich_board_delta_views(grouped[product_code]))
+        return views
 
     def fetch_execution_summaries(
         self,

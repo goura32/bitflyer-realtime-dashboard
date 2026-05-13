@@ -10,6 +10,7 @@ class EventFilters:
     channels: list[str] = field(default_factory=list)
     since_minutes: int | None = None
 
+
 @dataclass(slots=True)
 class OverviewStats:
     total_rows: int
@@ -86,8 +87,13 @@ class BoardDeltaView:
     product_code: str
     received_at: str
     mid_price: float | None
+    best_bid: float | None
+    best_ask: float | None
+    spread: float | None
     bids: list[BoardLevel]
     asks: list[BoardLevel]
+    previous_mid_price: float | None = None
+    previous_spread: float | None = None
 
 
 @dataclass(slots=True)
